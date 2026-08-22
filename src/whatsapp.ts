@@ -1,14 +1,16 @@
 import {
   makeWASocket, useMultiFileAuthState, Browsers, DisconnectReason,
-  isJidUser, isJidGroup, jidDecode, jidNormalizedUser, jidEncode,
-  getBinaryNodeChild, getBinaryNodeChildren,
+  isPnUser, isJidGroup, jidDecode, jidNormalizedUser, jidEncode,
 } from '@whiskeysockets/baileys'
 // @ts-ignore
 import qrcodeTerminal from 'qrcode-terminal'
 import pino from 'pino'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import { generateAnswer } from './workflow'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const logger = pino({ level: 'warn' })
 const AUTH_DIR = path.join(__dirname, '../auth')
@@ -42,7 +44,7 @@ function resolveSenderIdentity(
     const baseJid = jidEncode(decoded.user, decoded.server as any)
     return { rawJid: jid, identityType: 'DEVICE', resolvedPhone: decoded.user, stableId: jidNormalizedUser(baseJid) }
   }
-  if (isJidUser(jid)) {
+  if (isPnUser(jid)) {
     return { rawJid: jid, identityType: 'PN', resolvedPhone: decoded?.user, stableId: jidNormalizedUser(jid) }
   }
   return { rawJid: jid, identityType: 'UNKNOWN', resolvedPhone: undefined, stableId: jid }
@@ -129,85 +131,6 @@ async function resolveSendJid(
   return rawJid
 }
 
-// --- TC Token (error 463 fix) ---
-//
-// WhatsApp requires a <tctoken> child in 1:1 <message> stanzas.
-// Baileys 6.7.24 receives privacy_token notifications but never
-// attaches them to outgoing messages, causing error 463.
-//
-// Fix: wrap sendNode to inject <tctoken> into outgoing stanzas.
-
-const tcTokenCache = new Map<string, Buffer>()
-
-function is1On1PnJid(jid: string): boolean {
-  if (!jid) return false
-  if (jid.endsWith('@g.us')) return false
-  if (jid === 'status@broadcast') return false
-  if (jid.endsWith('@newsletter')) return false
-  return isJidUser(jid) || jid.endsWith('@s.whatsapp.net')
-}
-
-function extractTcTokensFromIqResult(result: any): void {
-  if (!result) return
-  const tokensNode = getBinaryNodeChild(result, 'tokens')
-  if (!tokensNode) return
-  const tokenNodes = getBinaryNodeChildren(tokensNode, 'token')
-  for (const tokenNode of tokenNodes) {
-    const jid = tokenNode.attrs?.jid
-    const type = tokenNode.attrs?.type
-    if (type !== 'trusted_contact' || !jid || !tokenNode.content?.length) continue
-    const normalizedJid = jidNormalizedUser(jid)
-    const tokenBuf = Buffer.from(tokenNode.content as Uint8Array)
-    if (tokenBuf.length > 0) {
-      tcTokenCache.set(normalizedJid, tokenBuf)
-      console.log(`[WhatsApp] TC token stored for ${normalizedJid} (${tokenBuf.length} bytes)`)
-    }
-  }
-}
-
-async function requestTcTokenForContact(contactJid: string, socket: any): Promise<void> {
-  const normalizedJid = jidNormalizedUser(contactJid)
-  if (tcTokenCache.has(normalizedJid)) return
-
-  try {
-    const result = await socket.getPrivacyTokens([normalizedJid])
-    extractTcTokensFromIqResult(result)
-  } catch (err) {
-    console.warn(`[WhatsApp] TC token request failed for ${normalizedJid}: ${(err as Error).message}`)
-  }
-}
-
-function wrapSendNodeWithTcToken(socket: any): void {
-  const originalSendNode = socket.sendNode
-  if (!originalSendNode) {
-    console.warn('[WhatsApp] sendNode not found - tcToken injection disabled')
-    return
-  }
-
-  socket.sendNode = (frame: any) => {
-    if (frame?.tag === 'message' && frame.attrs?.to) {
-      const to = frame.attrs.to as string
-      if (is1On1PnJid(to)) {
-        const normalizedTo = jidNormalizedUser(to)
-        const token = tcTokenCache.get(normalizedTo)
-        if (token && token.length > 0) {
-          frame.content = frame.content || []
-          const alreadyHas = frame.content.some((n: any) => n?.tag === 'tctoken')
-          if (!alreadyHas) {
-            frame.content.push({ tag: 'tctoken', attrs: {}, content: token })
-            console.log(`[WhatsApp] TC token injected for ${normalizedTo}`)
-          }
-        } else {
-          console.warn(`[WhatsApp] No TC token for ${normalizedTo} - may get error 463`)
-        }
-      }
-    }
-    return originalSendNode(frame)
-  }
-
-  console.log('[WhatsApp] sendNode wrapped for TC token injection')
-}
-
 // --- Connection State ---
 
 let sock: ReturnType<typeof makeWASocket> | null = null
@@ -272,25 +195,7 @@ export async function startWhatsAppClient() {
     logger: logger as any,
   })
 
-  // wrapSendNodeWithTcToken(sock)  // DISABLED for testing: does wrapper cause 463?
-
   sock.ev.on('creds.update', saveCreds)
-
-  // Capture TC tokens from incoming privacy_token notifications
-  sock.ev.on('chats.update', (updates) => {
-    if (id !== socketId) return
-    for (const update of updates) {
-      const tcToken = (update as any).tcToken
-      if (tcToken && (update as any).id) {
-        const normalizedJid = jidNormalizedUser((update as any).id)
-        const tokenBuf = Buffer.from(tcToken as Uint8Array)
-        if (tokenBuf.length > 0) {
-          tcTokenCache.set(normalizedJid, tokenBuf)
-          console.log(`[WhatsApp] TC token from notification: ${normalizedJid} (${tokenBuf.length} bytes)`)
-        }
-      }
-    }
-  })
 
   sock.ev.on('connection.update', async (update) => {
     if (id !== socketId) return
@@ -313,7 +218,6 @@ export async function startWhatsAppClient() {
       console.log(`[WhatsApp] Bot identity: ${me?.id}`)
       console.log(`[WhatsApp] Bot LID: ${(me as any)?.lid || 'unknown'}`)
       console.log(`[WhatsApp] Bot name: ${me?.name || 'unknown'}`)
-      console.log(`[WhatsApp] TC token cache: ${tcTokenCache.size} entries`)
 
       try {
         await sock!.uploadPreKeysToServerIfRequired()
@@ -412,14 +316,10 @@ export async function startWhatsAppClient() {
         const sendJid = await resolveSendJid(identity.rawJid, identity.identityType, senderPn)
         console.log(`[WhatsApp] Sending response to ${sendJid} (type: ${identity.identityType})`)
 
-        // DISABLED for testing: does wrapper cause 463?
-        // await requestTcTokenForContact(sendJid, sock)
-
         const result = await sock!.sendMessage(sendJid, { text: botResponse })
         const outId = result?.key?.id
         console.log(`[WhatsApp] Message accepted - outMsgId: ${outId}`)
         console.log(`[WhatsApp] Outgoing key: remoteJid=${result?.key?.remoteJid}, fromMe=${result?.key?.fromMe}`)
-        console.log(`[WhatsApp] NOTE: wrapper disabled - sending bare stanza (no TC token injection)`)
       } catch (err: any) {
         const errCode = err?.output?.statusCode || err?.data?.code
         const errMsg = err?.message || String(err)

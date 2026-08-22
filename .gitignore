@@ -31,3 +31,12 @@ coverage/
 
 # TypeScript temporary
 *.tsbuildinfo
+
+# Temporary/debug files
+temp.txt
+tsc_output.txt
+declaration.d.ts
+*.tgz
+
+# Python virtual environment
+.venv/

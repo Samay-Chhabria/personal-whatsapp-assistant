@@ -52,7 +52,7 @@ WhatsApp
 
 ## Requirements
 
-- **Node.js**: Version 18+ (the project uses TypeScript and modern features)
+- **Node.js**: Version 20+ (the project uses TypeScript and modern features)
 - **npm**: Comes with Node.js
 - **WhatsApp account**: Required for Baileys authentication (WhatsApp Web or Desktop)
 - **OpenRouter API key**: Required for LLM calls. Sign up at [openrouter.ai](https://openrouter.ai)
@@ -68,9 +68,7 @@ npm install
 This installs all dependencies listed in `package.json`, including:
 - `@whiskeysockets/baileys` - WhatsApp Web socket client
 - `@langchain/openrouter` - OpenRouter LLM integration
-- `@langchain/openai` - OpenAI embeddings (for RAG)
 - `@langchain/core` - LangChain core utilities
-- `@whiskeysockets/baileys` - WhatsApp Web socket client
 - `typescript`, `tsx` - TypeScript execution
 - `dotenv` - Environment variable loading
 

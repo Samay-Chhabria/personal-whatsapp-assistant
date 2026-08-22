@@ -1,9 +1,11 @@
 import dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 
 dotenv.config()
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const KNOWLEDGE_BASE_PATH = path.join(__dirname, '../knowledge/knowledge.txt')
 const CHUNK_SIZE = 1000
 const CHUNK_OVERLAP = 200
