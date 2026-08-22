@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+
+# Baileys authentication/session data
+auth/
+sessions/
+session/
+baileys_auth/
+
+# Logs
+*.log
+
+# Distribution/build outputs
+dist/
+build/
+
+# IDE/VS Code
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+
+# TypeScript temporary
+*.tsbuildinfo
