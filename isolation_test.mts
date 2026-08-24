@@ -1,20 +1,23 @@
+import { initializeDatabase, addMemory, getPersonalFacts, closeDatabase } from './src/memory'
 import { generateAnswer } from './src/workflow'
-import { addMemory, getPersonalFacts } from './src/memory'
+
+// Initialize SQLite database
+initializeDatabase();
 
 async function runTests() {
   // Setup: User1 provides personal info
   console.log('=== Setup: User1 provides personal info ===')
-  addMemory('user1', 'name', 'Ali')
-  addMemory('user1', 'age', 21)
-  addMemory('user1', 'city', 'Lahore')
-  addMemory('user1', 'hobby', 'cricket')
+  await addMemory('user1', 'name', 'Ali')
+  await addMemory('user1', 'age', 21)
+  await addMemory('user1', 'city', 'Lahore')
+  await addMemory('user1', 'hobby', 'cricket')
   console.log('User1 facts:', getPersonalFacts('user1'))
 
   // Setup: User2 provides different personal info
   console.log('\n=== Setup: User2 provides different personal info ===')
-  addMemory('user2', 'name', 'Sara')
-  addMemory('user2', 'age', 25)
-  addMemory('user2', 'city', 'Karachi')
+  await addMemory('user2', 'name', 'Sara')
+  await addMemory('user2', 'age', 25)
+  await addMemory('user2', 'city', 'Karachi')
   console.log('User2 facts:', getPersonalFacts('user2'))
 
   // Test: User1 memory query - should only see user1's facts
@@ -42,11 +45,11 @@ async function runTests() {
 
   // Test: Update existing fact
   console.log('\n=== Test: Update city from Lahore to Karachi ===')
-  addMemory('user1', 'city', 'Lahore') // already set, but simulating update
+  await addMemory('user1', 'city', 'Lahore') // already set, but simulating update
   // The user sends a new message updating the fact
   // In a real scenario, the extraction would catch this, but let's directly test the update
   // Actually, let's just verify the memory store can be updated
-  addMemory('user1', 'city', 'Karachi')
+  await addMemory('user1', 'city', 'Karachi')
   const r1Updated = await generateAnswer('What do you know about me?', 'user1')
   console.log('User1 after city update:', r1Updated)
   console.assert(r1Updated.includes('Karachi'), 'City should be updated to Karachi')
@@ -64,6 +67,9 @@ async function runTests() {
     const resp = await generateAnswer(q, 'user1')
     console.log(`"${q}" → ${resp.substring(0, 60)}${resp.length > 60 ? '...' : ''}`)
   }
+
+  // Cleanup
+  closeDatabase();
 
   console.log('\nAll isolation and update tests completed!')
 }

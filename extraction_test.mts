@@ -1,5 +1,8 @@
+import { initializeDatabase, addMemory, getPersonalFacts, closeDatabase } from './src/memory'
 import { extractPersonalFacts } from './src/memory'
-import { addMemory, getPersonalFacts } from './src/memory'
+
+// Initialize SQLite database
+initializeDatabase();
 
 // Test 1: Name and age
 const result1 = await extractPersonalFacts('My name is Ali and I am 21 years old.')
@@ -23,7 +26,7 @@ const result4 = await extractPersonalFacts('My name is Sara, I am 25, I am a dev
 console.log('Test 4 - multiple facts:', JSON.stringify(result4))
 
 // Test 5: Update existing fact
-addMemory('test_user', 'city', 'Original City')
+await addMemory('test_user', 'city', 'Original City')
 const result5 = await extractPersonalFacts('I moved to Karachi.')
 console.log('Test 5 - update city:', JSON.stringify(result5))
 const facts5 = getPersonalFacts('test_user')
@@ -31,13 +34,16 @@ console.log('test_user facts after update:', facts5)
 console.assert(facts5.city === 'Karachi', 'city should be updated to Karachi')
 
 // Test 6: User isolation
-addMemory('user1', 'name', 'Ali')
-addMemory('user2', 'name', 'Sara')
+await addMemory('user1', 'name', 'Ali')
+await addMemory('user2', 'name', 'Sara')
 const f1 = getPersonalFacts('user1')
 const f2 = getPersonalFacts('user2')
 console.log('Test 6 - user isolation:', f1, f2)
 console.assert(f1.name === 'Ali', 'user1 name should be Ali')
 console.assert(f2.name === 'Sara', 'user2 name should be Sara')
 console.assert(f1.name !== f2.name, 'users should have different names')
+
+// Cleanup
+closeDatabase();
 
 console.log('\nAll tests completed!')

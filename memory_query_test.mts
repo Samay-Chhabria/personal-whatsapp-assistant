@@ -1,13 +1,16 @@
+import { initializeDatabase, addMemory, getPersonalFacts, closeDatabase } from './src/memory'
 import { generateAnswer } from './src/workflow'
-import { addMemory, getPersonalFacts } from './src/memory'
+
+// Initialize SQLite database
+initializeDatabase();
 
 async function runTests() {
   // Test: User provides personal info
   console.log('=== Test 1: User provides personal info ===')
-  addMemory('user1', 'name', 'Ali')
-  addMemory('user1', 'age', 21)
-  addMemory('user1', 'city', 'Lahore')
-  addMemory('user1', 'hobby', 'cricket')
+  await addMemory('user1', 'name', 'Ali')
+  await addMemory('user1', 'age', 21)
+  await addMemory('user1', 'city', 'Lahore')
+  await addMemory('user1', 'hobby', 'cricket')
   console.log('Stored facts for user1:', getPersonalFacts('user1'))
 
   // Test: Memory query
@@ -41,6 +44,9 @@ async function runTests() {
   // This will likely return the error since no API key, but the flow should attempt RAG
   const response6 = await generateAnswer('What is RAG?', 'user1')
   console.log('Response:', response6)
+
+  // Cleanup
+  closeDatabase();
 
   console.log('\nAll tests completed!')
 }

@@ -37,27 +37,28 @@ export function resetChatModel() {
   chatModel = null
 }
 
+export function parseLLMResponse(response: unknown): string {
+  if (typeof response === 'object' && response !== null && 'content' in response) {
+    const res = response as { content: unknown }
+    if (Array.isArray(res.content)) {
+      return res.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text || '')
+        .join(' ')
+    } else {
+      return String(res.content)
+    }
+  }
+  return String(response)
+}
+
 export async function generateResponse(message: string): Promise<string> {
   const model = getChatModel()
 
   try {
     console.log('[LLM] Generating response')
     const response = await model.invoke([{ role: 'user', content: message }])
-    let text = ''
-
-    if (typeof response === 'object' && response.content) {
-      if (Array.isArray(response.content)) {
-        text = response.content
-          .filter((c: any) => c.type === 'text')
-          .map((c: any) => c.text || '')
-          .join(' ')
-      } else {
-        text = String(response.content)
-      }
-    } else {
-      text = String(response)
-    }
-
+    const text = parseLLMResponse(response)
     console.log('[LLM] Response generated')
     return text.trim()
   } catch (error: any) {

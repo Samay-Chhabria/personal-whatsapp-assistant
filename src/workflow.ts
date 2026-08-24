@@ -1,16 +1,19 @@
 import { retrieveContext } from './rag'
-import { getChatModel } from './llm'
-import { extractPersonalFacts, addMemory, getPersonalFacts, isFactAbout } from './memory'
+import { getChatModel, parseLLMResponse } from './llm'
+import { getAssistantSystemPrompt, getAssistantIntroduction } from './assistant'
+import {
+  extractPersonalFacts,
+  addMemory,
+  getPersonalFacts,
+  isFactAbout,
+  addConversationMessage,
+  getConversationHistory,
+  getContactProfile,
+  buildContactContext,
+} from './memory'
+import { shouldLearnStyle, tryLearnContactStyle } from './contactStyleLearning'
 
-const ALLOWED_FACT_KEYS = [
-  'name',
-  'age',
-  'city',
-  'profession',
-  'favorite food',
-  'hobbies',
-  'preferences',
-]
+const HISTORY_LIMIT = 20
 
 const MEMORY_QUERY_KEYWORDS = [
   'what do you know about me',
@@ -26,24 +29,31 @@ const MEMORY_QUERY_KEYWORDS = [
 ]
 
 export async function generateAnswer(message: string, userId: string): Promise<string> {
+  addConversationMessage(userId, 'user', message)
+
   const isMemory = isMemoryQueryFallback(message)
 
   if (isMemory) {
     const lower = message.toLowerCase().trim()
     if (lower.includes('who are you') || lower.includes('what are you') || lower.includes('tell me about yourself')) {
-      return "I'm a helpful WhatsApp chatbot assistant powered by AI. I can answer questions from my knowledge base and remember things you tell me. How can I help you?"
+      const reply = getAssistantIntroduction()
+      addConversationMessage(userId, 'assistant', reply)
+      return reply
     }
 
     const facts = getPersonalFacts(userId)
     const hasFacts = Object.keys(facts).length > 0
 
+    let reply: string
     if (hasFacts) {
       const lines = Object.entries(facts)
         .map(([key, value]) => `- ${capitalizeFirst(key)}: ${value}`)
-      return `Here's what I remember about you:\n\n${lines.join('\n')}`
+      reply = `Here's what I remember about you:\n\n${lines.join('\n')}`
     } else {
-      return "I don't have any personal information about you yet."
+      reply = "I don't have any personal information about you yet."
     }
+    addConversationMessage(userId, 'assistant', reply)
+    return reply
   }
 
   let context = ''
@@ -57,70 +67,77 @@ export async function generateAnswer(message: string, userId: string): Promise<s
     const { facts: extractedFacts } = await extractPersonalFacts(message)
     if (extractedFacts.length > 0) {
       for (const fact of extractedFacts) {
-        addMemory(userId, fact.key, fact.value)
+        await addMemory(userId, fact.key, fact.value)
       }
     }
   } catch (error) {
     console.error('[Workflow] Fact extraction failed:', (error as Error).message)
   }
 
-  let prompt: string
-  if (context) {
-    prompt = `Relevant context from the knowledge base:
-${context}
+  const history = await getConversationHistory(userId, HISTORY_LIMIT)
+  const contactProfile = getContactProfile(userId)
+  const contactContext = buildContactContext(contactProfile)
 
-Question: ${message}
+  const messages: Array<{ role: string; content: string }> = []
 
-Instructions:
-- Use the context above to answer the question
-- If the context does not contain the answer, say "The information is not available in the knowledge base."
-- Do not invent facts not supported by the retrieved context.`
-  } else {
-    prompt = `You are a helpful WhatsApp chatbot assistant. Answer the following question directly and concisely.
+  let systemContent = getAssistantSystemPrompt()
 
-Question: ${message}
-
-Instructions:
-- Be helpful and conversational
-- Keep responses concise and suitable for WhatsApp
-- Do not invent facts`
+  if (contactContext) {
+    systemContent += `\n\n---\n${contactContext}\nAdapt your communication style to match this contact's preferences.`
   }
+
+  if (context) {
+    systemContent += `\n\n---\nRelevant context from the knowledge base:\n${context}\nUse this context to inform your response when applicable.`
+  }
+
+  messages.push({ role: 'system', content: systemContent })
+
+  for (const msg of history) {
+    messages.push({ role: msg.role, content: msg.content })
+  }
+
+  messages.push({ role: 'user', content: message })
 
   try {
     const model = getChatModel()
     console.log('[Workflow] Generating LLM response')
-    const response = await model.invoke([{ role: 'user', content: prompt }])
-
-    let text = ''
-
-    if (typeof response === 'object' && response.content) {
-      if (Array.isArray(response.content)) {
-        text = response.content
-          .filter((c: any) => c.type === 'text')
-          .map((c: any) => c.text || '')
-          .join(' ')
-      } else {
-        text = String(response.content)
-      }
-    } else {
-      text = String(response)
-    }
+    const response = await model.invoke(messages)
+    const text = parseLLMResponse(response)
 
     const trimmed = text.trim()
     if (trimmed) {
       console.log('[Workflow] LLM response ready')
+      addConversationMessage(userId, 'assistant', trimmed)
+
+      triggerStyleLearning(userId)
+
       return trimmed
     }
-    return 'I was unable to generate a response. Please try again.'
+    const fallback = 'I was unable to generate a response. Please try again.'
+    addConversationMessage(userId, 'assistant', fallback)
+    triggerStyleLearning(userId)
+    return fallback
   } catch (error) {
     console.error('[Workflow] LLM generation failed:', (error as Error).message)
-    return 'Sorry, I encountered an error processing your message. Please try again later.'
+    const errorReply = 'Sorry, I encountered an error processing your message. Please try again later.'
+    addConversationMessage(userId, 'assistant', errorReply)
+    return errorReply
   }
 }
 
 function capitalizeFirst(str: string): string {
   if (!str) return str
   return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+function triggerStyleLearning(userId: string): void {
+  shouldLearnStyle(userId).then(should => {
+    if (should) {
+      return tryLearnContactStyle(userId)
+    }
+  }).catch(error => {
+    console.error('[Workflow] Style learning error:', (error as Error).message)
+  })
 }
 
 function isMemoryQueryFallback(message: string): boolean {

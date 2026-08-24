@@ -11,6 +11,11 @@ sessions/
 session/
 baileys_auth/
 
+# SQLite database files
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
 # Logs
 *.log
 

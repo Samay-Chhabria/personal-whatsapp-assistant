@@ -12,10 +12,13 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@langchain/core": "^1.2.8",
     "@langchain/openrouter": "^0.4.9",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
     "langchain": "^1.5.9",
     "pino": "^9.6.0",
