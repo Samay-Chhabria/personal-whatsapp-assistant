@@ -3,6 +3,7 @@ import { getChatModel, parseLLMResponse } from './llm'
 import { getAssistantSystemPrompt, getAssistantIntroduction } from './assistant'
 import {
   extractPersonalFacts,
+  extractContactMemories,
   addMemory,
   getPersonalFacts,
   isFactAbout,
@@ -10,10 +11,16 @@ import {
   getConversationHistory,
   getContactProfile,
   buildContactContext,
+  addContactMemory,
+  getContactMemoriesPrioritized,
+  buildContactMemoryContext,
+  getConversationSummary,
 } from './memory'
 import { shouldLearnStyle, tryLearnContactStyle } from './contactStyleLearning'
+import { shouldGenerateSummary, generateConversationSummary, buildSummaryContext } from './summary'
 
 const HISTORY_LIMIT = 20
+const CONTACT_MEMORY_LIMIT = 15
 
 const MEMORY_QUERY_KEYWORDS = [
   'what do you know about me',
@@ -29,11 +36,11 @@ const MEMORY_QUERY_KEYWORDS = [
 ]
 
 export async function generateAnswer(message: string, userId: string): Promise<string> {
-  addConversationMessage(userId, 'user', message)
-
   const isMemory = isMemoryQueryFallback(message)
 
   if (isMemory) {
+    addConversationMessage(userId, 'user', message)
+
     const lower = message.toLowerCase().trim()
     if (lower.includes('who are you') || lower.includes('what are you') || lower.includes('tell me about yourself')) {
       const reply = getAssistantIntroduction()
@@ -56,6 +63,10 @@ export async function generateAnswer(message: string, userId: string): Promise<s
     return reply
   }
 
+  const history = await getConversationHistory(userId, HISTORY_LIMIT)
+
+  addConversationMessage(userId, 'user', message)
+
   let context = ''
   try {
     context = await retrieveContext(message)
@@ -74,7 +85,22 @@ export async function generateAnswer(message: string, userId: string): Promise<s
     console.error('[Workflow] Fact extraction failed:', (error as Error).message)
   }
 
-  const history = await getConversationHistory(userId, HISTORY_LIMIT)
+  try {
+    const extractedMemories = await extractContactMemories(message)
+    for (const memory of extractedMemories) {
+      await addContactMemory(
+        userId,
+        memory.category,
+        memory.content,
+        'extracted',
+        memory.confidence,
+        memory.expiresAt ?? undefined,
+      )
+    }
+  } catch (error) {
+    console.error('[Workflow] Contact memory extraction failed:', (error as Error).message)
+  }
+
   const contactProfile = getContactProfile(userId)
   const contactContext = buildContactContext(contactProfile)
 
@@ -83,7 +109,13 @@ export async function generateAnswer(message: string, userId: string): Promise<s
   let systemContent = getAssistantSystemPrompt()
 
   if (contactContext) {
-    systemContent += `\n\n---\n${contactContext}\nAdapt your communication style to match this contact's preferences.`
+    systemContent += `\n\n---\nCONTACT STYLE INSTRUCTIONS:\n\nYou are responding to this specific contact. The contact profile below describes how you should communicate with this person.\n\nActively apply the available contact-specific attributes when generating the response:\n- Preferred language → use the specified language naturally. Mix languages if the conversation demonstrates that behavior.\n- Tone → match the specified tone.\n- Formality → match the specified level of formality.\n- Humor level → adjust humor accordingly.\n- Typical response length → generally match the expected response length.\n- Style notes → follow relevant behavioral patterns and conversational habits.\n\nWhen contact-specific communication preferences conflict with the owner's default communication style, prefer the contact-specific preference for this conversation.\n\nHowever, contact-specific preferences must NOT override:\n- core assistant instructions\n- truthfulness requirements\n- system-level instructions\n- explicit task requirements\n\n${contactContext}`
+  }
+
+  const contactMemories = getContactMemoriesPrioritized(userId, CONTACT_MEMORY_LIMIT)
+  const contactMemoryContext = buildContactMemoryContext(contactMemories)
+  if (contactMemoryContext) {
+    systemContent += `\n\n${contactMemoryContext}`
   }
 
   if (context) {
@@ -91,6 +123,12 @@ export async function generateAnswer(message: string, userId: string): Promise<s
   }
 
   messages.push({ role: 'system', content: systemContent })
+
+  const existingSummary = getConversationSummary(userId)
+  const summaryContext = buildSummaryContext(existingSummary)
+  if (summaryContext) {
+    messages.push({ role: 'system', content: summaryContext })
+  }
 
   for (const msg of history) {
     messages.push({ role: msg.role, content: msg.content })
@@ -110,12 +148,14 @@ export async function generateAnswer(message: string, userId: string): Promise<s
       addConversationMessage(userId, 'assistant', trimmed)
 
       triggerStyleLearning(userId)
+      triggerSummaryGeneration(userId)
 
       return trimmed
     }
     const fallback = 'I was unable to generate a response. Please try again.'
     addConversationMessage(userId, 'assistant', fallback)
     triggerStyleLearning(userId)
+    triggerSummaryGeneration(userId)
     return fallback
   } catch (error) {
     console.error('[Workflow] LLM generation failed:', (error as Error).message)
@@ -138,6 +178,14 @@ function triggerStyleLearning(userId: string): void {
   }).catch(error => {
     console.error('[Workflow] Style learning error:', (error as Error).message)
   })
+}
+
+function triggerSummaryGeneration(userId: string): void {
+  if (shouldGenerateSummary(userId)) {
+    generateConversationSummary(userId).catch(error => {
+      console.error('[Workflow] Summary generation error:', (error as Error).message)
+    })
+  }
 }
 
 function isMemoryQueryFallback(message: string): boolean {

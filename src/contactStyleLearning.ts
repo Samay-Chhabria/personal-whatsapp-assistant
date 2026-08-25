@@ -31,14 +31,14 @@ export async function analyzeContactStyle(
 
     const systemContent = `You are analyzing communication patterns from WhatsApp messages.
 
-Your task: Identify how the owner (Samay Kumar) tends to communicate with this specific person based on their recent conversation.
+Your task: Identify how the owner tends to communicate with this specific person based on their recent conversation.
 
 Rules:
 - Analyze the OWNER's messages to determine communication patterns
 - Do NOT copy complete messages
 - Do NOT invent facts about the contact
 - Do NOT infer sensitive personal attributes
-- Do NOT change Samay's identity
+- Do NOT change the owner's identity
 - Do NOT treat a single unusual message as a permanent personality trait
 - Only extract stable patterns observed across multiple messages
 - Focus on: language preference, language mixing, tone, formality, humor level, typical response length, and general conversational behavior
@@ -90,7 +90,7 @@ function formatExistingProfile(profile: ContactProfile): string {
 
 function formatMessagesForAnalysis(messages: Array<{ role: string; content: string }>): string {
   return messages.map(m => {
-    const label = m.role === 'user' ? 'Samay' : 'Contact'
+    const label = m.role === 'user' ? 'Owner' : 'Contact'
     return `[${label}]: ${m.content}`
   }).join('\n')
 }

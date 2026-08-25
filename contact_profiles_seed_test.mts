@@ -29,6 +29,12 @@ function assert(condition: boolean, message: string) {
 
 initializeDatabase()
 
+// Clean up stale data from previous test runs
+clearContactProfile('seed_friend_1')
+clearContactProfile('seed_colleague_1')
+clearContactProfile('seed_empty')
+clearMemory('seed_friend_1')
+
 // --- Test 1: Empty configuration ---
 console.log('=== Test 1: Empty configuration ===')
 const configured = getConfiguredContactProfiles()

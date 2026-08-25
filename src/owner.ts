@@ -12,33 +12,82 @@ export interface OwnerProfile {
   additionalContext?: string
 }
 
-const OWNER_PROFILE: OwnerProfile = {
-  name: 'Samay Kumar',
-  preferredName: 'Samay',
-  occupation: 'Computer Science student',
-  university: 'FAST-NUCES',
-  location: 'Pakistan',
-  languages: ['English', 'Urdu', 'Roman Urdu', 'Roman Sindhi'],
-  communicationStyle: 'Casual, concise, conversational, natural. Prefer short WhatsApp-style responses instead of long paragraphs unless the situation requires detail.',
-  personality: [
-    'Friendly',
-    'Direct',
-    'Curious about technology',
-    'Practical',
-    'Likes understanding how things work',
-    'Prefers straightforward explanations',
-    'Does not normally write overly formal messages',
-  ],
-  interests: [
-    'Software development',
-    'Artificial intelligence',
-    'Machine learning',
-    'Data science',
-    'Programming',
-    'Technology',
-  ],
-  additionalContext: 'The assistant is being developed as a personal WhatsApp assistant that will eventually help the owner respond to WhatsApp conversations.',
+function parseJsonArray(value: string | undefined): string[] | undefined {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed) && parsed.every(v => typeof v === 'string')) {
+      return parsed
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
 }
+
+function loadOwnerProfile(): OwnerProfile {
+  const envName = process.env.OWNER_NAME
+  const envPreferredName = process.env.OWNER_PREFERRED_NAME
+  const envOccupation = process.env.OWNER_OCCUPATION
+  const envUniversity = process.env.OWNER_UNIVERSITY
+  const envLocation = process.env.OWNER_LOCATION
+  const envLanguages = parseJsonArray(process.env.OWNER_LANGUAGES)
+  const envCommunicationStyle = process.env.OWNER_COMMUNICATION_STYLE
+  const envPersonality = parseJsonArray(process.env.OWNER_PERSONALITY)
+  const envInterests = parseJsonArray(process.env.OWNER_INTERESTS)
+  const envCommonExpressions = parseJsonArray(process.env.OWNER_COMMON_EXPRESSIONS)
+  const envAdditionalContext = process.env.OWNER_ADDITIONAL_CONTEXT
+
+  const hasEnvValues = envName || envPreferredName || envOccupation || envUniversity ||
+    envLocation || envLanguages || envCommunicationStyle || envPersonality || envInterests ||
+    envCommonExpressions || envAdditionalContext
+
+  if (hasEnvValues) {
+    return {
+      name: envName,
+      preferredName: envPreferredName,
+      occupation: envOccupation,
+      university: envUniversity,
+      location: envLocation,
+      languages: envLanguages,
+      communicationStyle: envCommunicationStyle,
+      personality: envPersonality,
+      interests: envInterests,
+      commonExpressions: envCommonExpressions,
+      additionalContext: envAdditionalContext,
+    }
+  }
+
+  return {
+    name: 'Samay Kumar',
+    preferredName: 'Samay',
+    occupation: 'Computer Science student',
+    university: 'FAST-NUCES',
+    location: 'Pakistan',
+    languages: ['English', 'Urdu', 'Roman Urdu', 'Roman Sindhi'],
+    communicationStyle: 'Casual, concise, conversational, natural. Prefer short WhatsApp-style responses instead of long paragraphs unless the situation requires detail.',
+    personality: [
+      'Friendly',
+      'Direct',
+      'Curious about technology',
+      'Practical',
+      'Likes understanding how things work',
+      'Prefers straightforward explanations',
+      'Does not normally write overly formal messages',
+    ],
+    interests: [
+      'Software development',
+      'Artificial intelligence',
+      'Machine learning',
+      'Data science',
+      'Programming',
+      'Technology',
+    ],
+    additionalContext: 'The assistant is being developed as a personal WhatsApp assistant that will eventually help the owner respond to WhatsApp conversations.',
+  }
+}
+
+const OWNER_PROFILE: OwnerProfile = loadOwnerProfile()
 
 export function getOwnerProfile(): OwnerProfile {
   return { ...OWNER_PROFILE }

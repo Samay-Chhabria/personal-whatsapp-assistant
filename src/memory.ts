@@ -34,6 +34,34 @@ export interface ContactProfile {
   styleNotes?: string
 }
 
+// --- Contact Memory Types ---
+
+export type ContactMemoryCategory =
+  | 'identity'
+  | 'personal_fact'
+  | 'event'
+  | 'commitment'
+  | 'context'
+  | 'inside_joke'
+  | 'topic'
+
+export type ContactMemorySource =
+  | 'extracted'
+  | 'learned'
+  | 'manual'
+
+export interface ContactMemory {
+  id: number
+  stableId: string
+  category: ContactMemoryCategory
+  content: string
+  source: ContactMemorySource
+  confidence: number
+  createdAt: string
+  updatedAt: string
+  expiresAt?: string
+}
+
 // --- Database Init ---
 
 export function initializeDatabase(): Database.Database {
@@ -81,6 +109,45 @@ export function initializeDatabase(): Database.Database {
         UNIQUE(contact_id, key),
         FOREIGN KEY (contact_id) REFERENCES contacts(id)
       );
+
+      CREATE TABLE IF NOT EXISTS contact_memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contact_id INTEGER NOT NULL,
+        category TEXT NOT NULL CHECK(category IN (
+          'identity',
+          'personal_fact',
+          'event',
+          'commitment',
+          'context',
+          'inside_joke',
+          'topic'
+        )),
+        content TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN (
+          'extracted',
+          'learned',
+          'manual'
+        )),
+        confidence REAL DEFAULT 1.0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        expires_at TEXT,
+        FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memories_contact ON contact_memories(contact_id);
+      CREATE INDEX IF NOT EXISTS idx_memories_category ON contact_memories(category);
+
+      CREATE TABLE IF NOT EXISTS conversation_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contact_id INTEGER UNIQUE NOT NULL,
+        summary TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_summaries_contact ON conversation_summaries(contact_id);
     `)
 
     console.log(`[Memory] Database initialized at ${DB_PATH}`)
@@ -164,6 +231,15 @@ export async function getConversationHistory(userId: string, limit?: number): Pr
 
   const rows = d.prepare('SELECT role, content FROM messages WHERE contact_id = ? ORDER BY id ASC').all(contactRow.id) as Array<{ role: string; content: string }>
   return rows
+}
+
+export function getMessageCount(userId: string): number {
+  const d = getDb()
+  const contactRow = d.prepare('SELECT id FROM contacts WHERE stable_id = ?').get(userId) as { id: number } | undefined
+  if (!contactRow) return 0
+
+  const row = d.prepare('SELECT COUNT(*) as count FROM messages WHERE contact_id = ?').get(contactRow.id) as { count: number }
+  return row.count
 }
 
 // --- Contact Profile ---
@@ -285,6 +361,271 @@ export function buildContactContext(profile: ContactProfile | null): string {
   return `CONTACT-SPECIFIC COMMUNICATION STYLE:\n${lines.join('\n')}`
 }
 
+// --- Contact Memories ---
+
+function rowToMemory(row: Record<string, unknown>): ContactMemory {
+  return {
+    id: row.id as number,
+    stableId: '',
+    category: row.category as ContactMemoryCategory,
+    content: row.content as string,
+    source: row.source as ContactMemorySource,
+    confidence: row.confidence as number,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    expiresAt: (row.expires_at as string) || undefined,
+  }
+}
+
+function resolveContactId(stableId: string): number | null {
+  const d = getDb()
+  const row = d.prepare('SELECT id FROM contacts WHERE stable_id = ?').get(stableId) as { id: number } | undefined
+  return row ? row.id : null
+}
+
+export function addContactMemory(
+  stableId: string,
+  category: ContactMemoryCategory,
+  content: string,
+  source: ContactMemorySource,
+  confidence: number = 1.0,
+  expiresAt?: string,
+): ContactMemory {
+  const d = getDb()
+  const contactId = getOrCreateContactId(stableId)
+
+  const trimmedContent = content.trim()
+  if (!trimmedContent) {
+    throw new Error('Contact memory content cannot be empty')
+  }
+
+  const existing = d.prepare(
+    'SELECT id FROM contact_memories WHERE contact_id = ? AND category = ? AND content = ?'
+  ).get(contactId, category, trimmedContent) as { id: number } | undefined
+
+  if (existing) {
+    d.prepare(`
+      UPDATE contact_memories
+      SET confidence = ?, source = ?, expires_at = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(confidence, source, expiresAt ?? null, existing.id)
+
+    const updated = d.prepare('SELECT * FROM contact_memories WHERE id = ?').get(existing.id) as Record<string, unknown>
+    const memory = rowToMemory(updated)
+    memory.stableId = stableId
+    return memory
+  }
+
+  const result = d.prepare(`
+    INSERT INTO contact_memories (contact_id, category, content, source, confidence, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(contactId, category, trimmedContent, source, confidence, expiresAt ?? null)
+
+  const inserted = d.prepare('SELECT * FROM contact_memories WHERE id = ?').get(result.lastInsertRowid) as Record<string, unknown>
+  const memory = rowToMemory(inserted)
+  memory.stableId = stableId
+  return memory
+}
+
+export function getContactMemories(stableId: string): ContactMemory[] {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return []
+
+  const rows = d.prepare(
+    'SELECT * FROM contact_memories WHERE contact_id = ? ORDER BY confidence DESC, updated_at DESC'
+  ).all(contactId) as Array<Record<string, unknown>>
+
+  return rows.map(row => {
+    const memory = rowToMemory(row)
+    memory.stableId = stableId
+    return memory
+  })
+}
+
+export function getContactMemoriesByCategory(
+  stableId: string,
+  category: ContactMemoryCategory,
+): ContactMemory[] {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return []
+
+  const rows = d.prepare(
+    'SELECT * FROM contact_memories WHERE contact_id = ? AND category = ? ORDER BY confidence DESC, updated_at DESC'
+  ).all(contactId, category) as Array<Record<string, unknown>>
+
+  return rows.map(row => {
+    const memory = rowToMemory(row)
+    memory.stableId = stableId
+    return memory
+  })
+}
+
+export function getActiveContactMemories(
+  stableId: string,
+  minConfidence: number = DEFAULT_CONFIDENCE_THRESHOLD,
+): ContactMemory[] {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return []
+
+  const rows = d.prepare(
+    `SELECT * FROM contact_memories
+     WHERE contact_id = ?
+       AND (expires_at IS NULL OR expires_at > datetime('now'))
+       AND confidence >= ?
+     ORDER BY confidence DESC, updated_at DESC`
+  ).all(contactId, minConfidence) as Array<Record<string, unknown>>
+
+  return rows.map(row => {
+    const memory = rowToMemory(row)
+    memory.stableId = stableId
+    return memory
+  })
+}
+
+export function clearExpiredMemories(): number {
+  const d = getDb()
+  const result = d.prepare(
+    "DELETE FROM contact_memories WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')"
+  ).run()
+  return result.changes
+}
+
+// --- Conversation Summaries ---
+
+export function getConversationSummary(stableId: string): string | null {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return null
+
+  const row = d.prepare('SELECT summary FROM conversation_summaries WHERE contact_id = ?').get(contactId) as { summary: string } | undefined
+  return row ? row.summary : null
+}
+
+export function upsertConversationSummary(stableId: string, summary: string): void {
+  const d = getDb()
+  const contactId = getOrCreateContactId(stableId)
+
+  d.prepare(`
+    INSERT INTO conversation_summaries (contact_id, summary, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(contact_id) DO UPDATE SET summary = excluded.summary, updated_at = datetime('now')
+  `).run(contactId, summary)
+}
+
+export function clearConversationSummary(stableId: string): void {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return
+  d.prepare('DELETE FROM conversation_summaries WHERE contact_id = ?').run(contactId)
+}
+
+export function clearContactMemories(stableId: string): void {
+  const d = getDb()
+  const contactId = resolveContactId(stableId)
+  if (contactId === null) return
+  d.prepare('DELETE FROM contact_memories WHERE contact_id = ?').run(contactId)
+}
+
+// --- Contact Memory Context Builder ---
+
+export const CATEGORY_ORDER: ContactMemoryCategory[] = [
+  'identity',
+  'personal_fact',
+  'event',
+  'commitment',
+  'context',
+  'inside_joke',
+  'topic',
+]
+
+export const CATEGORY_LABELS: Record<ContactMemoryCategory, string> = {
+  identity: 'IDENTITY',
+  personal_fact: 'PERSONAL FACTS',
+  event: 'EVENTS',
+  commitment: 'COMMITMENTS',
+  context: 'CONTEXT',
+  inside_joke: 'INSIDE JOKES',
+  topic: 'TOPICS',
+}
+
+export const CATEGORY_LIMITS: Record<ContactMemoryCategory, number> = {
+  identity: 3,
+  personal_fact: 5,
+  event: 3,
+  commitment: 3,
+  context: 3,
+  inside_joke: 2,
+  topic: 2,
+}
+
+export const DEFAULT_MEMORY_LIMIT = 15
+export const DEFAULT_CONFIDENCE_THRESHOLD = 0.3
+
+export function getContactMemoriesPrioritized(
+  stableId: string,
+  limit: number = DEFAULT_MEMORY_LIMIT,
+  minConfidence: number = DEFAULT_CONFIDENCE_THRESHOLD,
+): ContactMemory[] {
+  const active = getActiveContactMemories(stableId, minConfidence)
+  if (active.length === 0) return []
+
+  const byCategory = new Map<ContactMemoryCategory, ContactMemory[]>()
+  for (const cat of CATEGORY_ORDER) {
+    byCategory.set(cat, [])
+  }
+  for (const mem of active) {
+    const list = byCategory.get(mem.category)
+    if (list) list.push(mem)
+  }
+
+  const selected: ContactMemory[] = []
+  let remaining = limit
+
+  for (const cat of CATEGORY_ORDER) {
+    if (remaining <= 0) break
+    const list = byCategory.get(cat) || []
+    const cap = Math.min(CATEGORY_LIMITS[cat], remaining)
+    const toTake = list.slice(0, cap)
+    selected.push(...toTake)
+    remaining -= toTake.length
+  }
+
+  return selected
+}
+
+export function buildContactMemoryContext(
+  memories: ContactMemory[],
+  options?: { includeMetadata?: boolean },
+): string {
+  if (memories.length === 0) return ''
+
+  const grouped = new Map<ContactMemoryCategory, string[]>()
+  for (const mem of memories) {
+    const lines = grouped.get(mem.category) || []
+    lines.push(`- ${mem.content}`)
+    grouped.set(mem.category, lines)
+  }
+
+  const sections: string[] = []
+  for (const cat of CATEGORY_ORDER) {
+    const lines = grouped.get(cat)
+    if (lines && lines.length > 0) {
+      sections.push(`${CATEGORY_LABELS[cat]}:\n${lines.join('\n')}`)
+    }
+  }
+
+  if (sections.length === 0) return ''
+
+  const metadataLine = options?.includeMetadata
+    ? `\n[Retrieved ${memories.length} memories | Categories: ${sections.length}]`
+    : ''
+
+  return `---\nCONTACT MEMORY RULES:\n\nThe memories below belong ONLY to the current contact.\nUse them as background context when relevant.\n- Prefer relevant memories over unrelated memories.\n- Do not mention a memory simply because it exists.\n- Do not invent details that are not present in the memories.\n- If a memory conflicts with an explicit statement made in the current conversation, prefer the current conversation.\n- Treat temporary context as potentially outdated.\n- Do not reveal internal memory mechanisms, confidence scores, database information, or extraction details.\n- Never use memories belonging to another contact.\nThe current conversation always takes precedence over stored memories.\n\nCONTACT MEMORIES:\n\nUse these memories only when relevant to the current conversation. They describe information previously learned about this specific contact.\n\n${sections.join('\n\n')}${metadataLine}\n\nDo not mention these memories merely because they are available.\nUse them naturally only when relevant.\n---`
+}
+
 // --- Contact Profile Seeding ---
 
 export function seedContactProfiles(configuredProfiles: Array<{ stableId: string } & Record<string, unknown>>): number {
@@ -349,6 +690,8 @@ export function clearMemory(userId: string): void {
 
   d.prepare('DELETE FROM messages WHERE contact_id = ?').run(contactRow.id)
   d.prepare('DELETE FROM facts WHERE contact_id = ?').run(contactRow.id)
+  d.prepare('DELETE FROM contact_memories WHERE contact_id = ?').run(contactRow.id)
+  d.prepare('DELETE FROM conversation_summaries WHERE contact_id = ?').run(contactRow.id)
   // Keep the contact row to preserve stable_id identity
 }
 
@@ -364,4 +707,4 @@ export function closeDatabase(): void {
 
 // --- Re-exports from extraction ---
 
-export { extractPersonalFacts, isFactAbout } from './extraction'
+export { extractPersonalFacts, extractContactMemories, isFactAbout } from './extraction'
