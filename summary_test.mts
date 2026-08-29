@@ -4,6 +4,7 @@ import {
   getConversationHistory,
   getMessageCount,
   getConversationSummary,
+  getSummaryRecord,
   upsertConversationSummary,
   clearConversationSummary,
   clearMemory,
@@ -12,6 +13,9 @@ import {
 import {
   shouldGenerateSummary,
   buildSummaryContext,
+  generateConversationSummary,
+  getMessagesForSummary,
+  setSummaryModelFn,
   SUMMARY_TRIGGER_MESSAGES,
   SUMMARY_HISTORY_WINDOW,
 } from './src/summary'
@@ -217,6 +221,146 @@ assert(context.includes('User is a software developer'), 'context should include
 assert(context.includes('---'), 'context should include delimiters')
 assert(context.includes('Do not explicitly reference'), 'context should include usage instructions')
 console.log('buildSummaryContext formatting correct')
+
+// --- Test 14: Summary record carries watermark ---
+console.log('\n=== Test 14: Summary record carries watermark ===')
+const testUser14 = 'summary_test_user_14'
+clearMemory(testUser14)
+upsertConversationSummary(testUser14, 'S14', 25)
+const rec14 = getSummaryRecord(testUser14)
+assert(rec14 !== null, 'record should exist')
+assert(rec14!.summary === 'S14', 'summary should match')
+assert(rec14!.lastSummarizedMessageId === 25, 'watermark should match')
+console.log('Watermark stored and retrieved')
+
+// --- Test 15: First summary uses full history (not limited to 40) ---
+console.log('\n=== Test 15: First summary uses full history ===')
+const testUser15 = 'summary_test_user_15'
+clearMemory(testUser15)
+for (let i = 1; i <= 60; i++) {
+  addConversationMessage(testUser15, i % 2 ? 'user' : 'assistant', `msg ${i}`)
+}
+const msgs15 = getMessagesForSummary(testUser15, null)
+assert(msgs15.length === 60, `first summary should include all 60 messages, got ${msgs15.length}`)
+assert(msgs15[0].id < msgs15[msgs15.length - 1].id, 'first summary should start at oldest message')
+console.log('First summary covers complete history')
+
+// --- Test 16: Subsequent summary uses only messages after watermark ---
+console.log('\n=== Test 16: Subsequent summary uses delta after watermark ===')
+const testUser16 = 'summary_test_user_16'
+clearMemory(testUser16)
+for (let i = 1; i <= 60; i++) {
+  addConversationMessage(testUser16, i % 2 ? 'user' : 'assistant', `m ${i}`)
+}
+const all16 = getMessagesForSummary(testUser16, null)
+const watermarkId16 = all16[39].id // id of the 40th message for this contact
+const existingRec16 = { summary: 'prev', lastSummarizedMessageId: watermarkId16 }
+const msgs16 = getMessagesForSummary(testUser16, existingRec16)
+assert(msgs16.length === 20, `subsequent summary should include 20 messages, got ${msgs16.length}`)
+assert(msgs16[0].id === all16[40].id, 'subsequent summary should start after the watermark')
+console.log('Subsequent summary covers only delta')
+
+// --- Test 17: Full pipeline - first + subsequent via stubbed model, no loss ---
+console.log('\n=== Test 17: Full pipeline preserves old messages ===')
+const testUser17 = 'summary_test_user_17'
+clearMemory(testUser17)
+for (let i = 1; i <= 60; i++) {
+  addConversationMessage(testUser17, i % 2 ? 'user' : 'assistant', `p ${i}`)
+}
+
+let captured17 = ''
+setSummaryModelFn(async (messages) => {
+  captured17 = (messages.find((m) => m.role === 'user')?.content) ?? ''
+  return 'SUMMARY_17'
+})
+await generateConversationSummary(testUser17)
+let rec17 = getSummaryRecord(testUser17)
+const all17 = getMessagesForSummary(testUser17, null)
+const expectedWatermark17 = all17[all17.length - 1].id
+assert(rec17 !== null, 'summary record created')
+assert(rec17!.lastSummarizedMessageId === expectedWatermark17, `watermark should be max id ${expectedWatermark17} after first run, got ${rec17!.lastSummarizedMessageId}`)
+
+// Add more messages and run again
+for (let i = 61; i <= 90; i++) {
+  addConversationMessage(testUser17, i % 2 ? 'user' : 'assistant', `p ${i}`)
+}
+captured17 = ''
+await generateConversationSummary(testUser17)
+rec17 = getSummaryRecord(testUser17)
+const all17b = getMessagesForSummary(testUser17, null)
+const expectedWatermark17b = all17b[all17b.length - 1].id
+assert(rec17!.lastSummarizedMessageId === expectedWatermark17b, `watermark should advance to ${expectedWatermark17b}, got ${rec17!.lastSummarizedMessageId}`)
+assert(captured17.includes(all17b[60].content), 'second run should include delta start (61st message)')
+assert(!captured17.includes(all17b[0].content), 'second run should NOT re-summarize oldest message')
+console.log('Old messages preserved; delta used for subsequent runs')
+
+// --- Test 18: Watermark does NOT advance after empty/failed generation ---
+console.log('\n=== Test 18: Watermark stable on failure ===')
+const testUser18 = 'summary_test_user_18'
+clearMemory(testUser18)
+for (let i = 1; i <= 60; i++) {
+  addConversationMessage(testUser18, i % 2 ? 'user' : 'assistant', `q ${i}`)
+}
+setSummaryModelFn(async () => 'FIRST_OK')
+await generateConversationSummary(testUser18)
+const before18 = getSummaryRecord(testUser18)!.lastSummarizedMessageId
+const expected18 = getMessagesForSummary(testUser18, null)
+assert(before18 === expected18[expected18.length - 1].id, 'baseline watermark matches max id')
+
+// empty output (treated as failure)
+setSummaryModelFn(async () => '')
+for (let i = 61; i <= 80; i++) {
+  addConversationMessage(testUser18, i % 2 ? 'user' : 'assistant', `q ${i}`)
+}
+await generateConversationSummary(testUser18)
+const afterEmpty18 = getSummaryRecord(testUser18)!.lastSummarizedMessageId
+assert(afterEmpty18 === before18, 'watermark unchanged after empty summary')
+
+// thrown error (treated as failure)
+setSummaryModelFn(async () => { throw new Error('boom') })
+for (let i = 81; i <= 95; i++) {
+  addConversationMessage(testUser18, i % 2 ? 'user' : 'assistant', `q ${i}`)
+}
+await generateConversationSummary(testUser18)
+const afterThrow18 = getSummaryRecord(testUser18)!.lastSummarizedMessageId
+assert(afterThrow18 === before18, 'watermark unchanged after thrown error')
+console.log('Watermark stable on generation failure')
+
+// --- Test 19: Watermark persists after close/reopen (migration present) ---
+console.log('\n=== Test 19: Watermark persists across restart ===')
+const testUser19 = 'summary_test_user_19'
+clearMemory(testUser19)
+upsertConversationSummary(testUser19, 'S19', 77)
+closeDatabase()
+initializeDatabase()
+const rec19 = getSummaryRecord(testUser19)
+assert(rec19 !== null && rec19.lastSummarizedMessageId === 77, 'watermark persists after reopen')
+console.log('Watermark persisted across restart')
+
+// --- Test 20: Multiple contacts have independent summaries + watermarks ---
+console.log('\n=== Test 20: Per-contact independence ===')
+const testUserA20 = 'summary_test_user_a20'
+const testUserB20 = 'summary_test_user_b20'
+clearMemory(testUserA20)
+clearMemory(testUserB20)
+upsertConversationSummary(testUserA20, 'SA', 10)
+upsertConversationSummary(testUserB20, 'SB', 20)
+assert(getSummaryRecord(testUserA20)!.lastSummarizedMessageId === 10, 'user A watermark 10')
+assert(getSummaryRecord(testUserB20)!.lastSummarizedMessageId === 20, 'user B watermark 20')
+console.log('Independent per-contact watermarks verified')
+
+// --- Test 21: clearMemory removes summary + watermark ---
+console.log('\n=== Test 21: clearMemory removes summary + watermark ===')
+const testUser21 = 'summary_test_user_21'
+clearMemory(testUser21)
+for (let i = 1; i <= 5; i++) {
+  addConversationMessage(testUser21, 'user', `r ${i}`)
+}
+upsertConversationSummary(testUser21, 'SW', 5)
+assert(getSummaryRecord(testUser21) !== null, 'summary+watermark present before clear')
+clearMemory(testUser21)
+assert(getSummaryRecord(testUser21) === null, 'summary+watermark removed by clearMemory')
+console.log('clearMemory removes summary + watermark')
 
 // Cleanup
 closeDatabase()

@@ -150,6 +150,14 @@ export function initializeDatabase(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_summaries_contact ON conversation_summaries(contact_id);
     `)
 
+    // Migration: existing databases created before the watermark column was
+    // added will not receive it via CREATE TABLE IF NOT EXISTS. Add it only
+    // when missing so the column is present without dropping data.
+    const summaryCols = db.pragma('table_info(conversation_summaries)') as Array<{ name: string }>
+    if (!summaryCols.some(c => c.name === 'last_summarized_message_id')) {
+      db.exec('ALTER TABLE conversation_summaries ADD COLUMN last_summarized_message_id INTEGER')
+    }
+
     console.log(`[Memory] Database initialized at ${DB_PATH}`)
     return db
   } catch (error) {
@@ -495,24 +503,49 @@ export function clearExpiredMemories(): number {
 
 // --- Conversation Summaries ---
 
+export interface ConversationSummaryRecord {
+  summary: string
+  lastSummarizedMessageId: number | null
+}
+
 export function getConversationSummary(stableId: string): string | null {
+  const record = getSummaryRecord(stableId)
+  return record ? record.summary : null
+}
+
+export function getSummaryRecord(stableId: string): ConversationSummaryRecord | null {
   const d = getDb()
   const contactId = resolveContactId(stableId)
   if (contactId === null) return null
 
-  const row = d.prepare('SELECT summary FROM conversation_summaries WHERE contact_id = ?').get(contactId) as { summary: string } | undefined
-  return row ? row.summary : null
+  const row = d.prepare(
+    'SELECT summary, last_summarized_message_id FROM conversation_summaries WHERE contact_id = ?'
+  ).get(contactId) as { summary: string; last_summarized_message_id: number | null } | undefined
+
+  if (!row) return null
+
+  return {
+    summary: row.summary,
+    lastSummarizedMessageId: row.last_summarized_message_id ?? null,
+  }
 }
 
-export function upsertConversationSummary(stableId: string, summary: string): void {
+export function upsertConversationSummary(
+  stableId: string,
+  summary: string,
+  lastSummarizedMessageId: number | null = null,
+): void {
   const d = getDb()
   const contactId = getOrCreateContactId(stableId)
 
   d.prepare(`
-    INSERT INTO conversation_summaries (contact_id, summary, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(contact_id) DO UPDATE SET summary = excluded.summary, updated_at = datetime('now')
-  `).run(contactId, summary)
+    INSERT INTO conversation_summaries (contact_id, summary, last_summarized_message_id, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(contact_id) DO UPDATE SET
+      summary = excluded.summary,
+      last_summarized_message_id = excluded.last_summarized_message_id,
+      updated_at = datetime('now')
+  `).run(contactId, summary, lastSummarizedMessageId)
 }
 
 export function clearConversationSummary(stableId: string): void {
@@ -520,6 +553,33 @@ export function clearConversationSummary(stableId: string): void {
   const contactId = resolveContactId(stableId)
   if (contactId === null) return
   d.prepare('DELETE FROM conversation_summaries WHERE contact_id = ?').run(contactId)
+}
+
+// --- Conversation Message Retrieval (with ids, for summarization) ---
+
+export function getAllConversationMessages(
+  stableId: string,
+): Array<{ id: number; role: string; content: string }> {
+  const d = getDb()
+  const contactRow = d.prepare('SELECT id FROM contacts WHERE stable_id = ?').get(stableId) as { id: number } | undefined
+  if (!contactRow) return []
+
+  return d.prepare(
+    'SELECT id, role, content FROM messages WHERE contact_id = ? ORDER BY id ASC'
+  ).all(contactRow.id) as Array<{ id: number; role: string; content: string }>
+}
+
+export function getConversationMessagesAfter(
+  stableId: string,
+  afterMessageId: number,
+): Array<{ id: number; role: string; content: string }> {
+  const d = getDb()
+  const contactRow = d.prepare('SELECT id FROM contacts WHERE stable_id = ?').get(stableId) as { id: number } | undefined
+  if (!contactRow) return []
+
+  return d.prepare(
+    'SELECT id, role, content FROM messages WHERE contact_id = ? AND id > ? ORDER BY id ASC'
+  ).all(contactRow.id, afterMessageId) as Array<{ id: number; role: string; content: string }>
 }
 
 export function clearContactMemories(stableId: string): void {

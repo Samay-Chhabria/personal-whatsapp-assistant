@@ -1,9 +1,12 @@
 import { getChatModel, parseLLMResponse } from './llm'
 import {
-  getConversationHistory,
   getMessageCount,
   getConversationSummary,
   upsertConversationSummary,
+  getSummaryRecord,
+  getAllConversationMessages,
+  getConversationMessagesAfter,
+  ConversationSummaryRecord,
 } from './memory'
 
 // --- Configuration ---
@@ -64,28 +67,61 @@ export function shouldGenerateSummary(userId: string): boolean {
   return messageCount > 0 && messageCount % SUMMARY_TRIGGER_MESSAGES === 0
 }
 
+// Selects the messages that should be summarized next.
+// - No existing summary/watermark => the complete available history (first run).
+// - Existing summary/watermark    => only messages after the watermark (delta).
+export function getMessagesForSummary(
+  userId: string,
+  existing: ConversationSummaryRecord | null,
+): Array<{ id: number; role: string; content: string }> {
+  if (!existing) {
+    return getAllConversationMessages(userId)
+  }
+  return getConversationMessagesAfter(userId, existing.lastSummarizedMessageId ?? 0)
+}
+
+// Test seam: allows deterministic injection of the model response without an
+// API key. Defaults to the real OpenRouter chat model.
+let summaryModelFn: (messages: Array<{ role: string; content: string }>) => Promise<string> = async (
+  messages,
+) => {
+  const model = getChatModel()
+  const response = await model.invoke(messages)
+  return parseLLMResponse(response)
+}
+
+export function setSummaryModelFn(
+  fn: (messages: Array<{ role: string; content: string }>) => Promise<string>,
+): void {
+  summaryModelFn = fn
+}
+
 export async function generateConversationSummary(userId: string): Promise<void> {
   try {
-    const existingSummary = getConversationSummary(userId)
-    const history = await getConversationHistory(userId, SUMMARY_HISTORY_WINDOW)
+    const existing = getSummaryRecord(userId)
+    const messages = getMessagesForSummary(userId, existing)
 
-    if (history.length === 0) {
+    if (messages.length === 0) {
       return
     }
 
-    const conversationText = formatConversationForSummary(history)
+    // Watermark advances only to the newest message actually included.
+    const newWatermark = messages[messages.length - 1].id
+    const existingSummary = existing ? existing.summary : null
+    const conversationText = formatConversationForSummary(messages)
     const prompt = buildSummaryPrompt(existingSummary, conversationText)
 
-    const model = getChatModel()
-    const response = await model.invoke([
-      { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
-      { role: 'user', content: prompt },
-    ])
+    const newSummary = (
+      await summaryModelFn([
+        { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ])
+    ).trim()
 
-    const newSummary = parseLLMResponse(response).trim()
-
+    // Only persist + advance the watermark on a successful (non-empty) summary.
+    // On failure or empty output, the watermark is left unchanged.
     if (newSummary && newSummary.length > 0) {
-      upsertConversationSummary(userId, newSummary)
+      upsertConversationSummary(userId, newSummary, newWatermark)
       console.log(`[Summary] Updated summary for user ${userId}`)
     }
   } catch (error) {

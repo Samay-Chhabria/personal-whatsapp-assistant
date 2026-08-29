@@ -45,3 +45,8 @@ declaration.d.ts
 
 # Python virtual environment
 .venv/
+
+#nothing
+RUN_GUIDE.md
+CHANGES_SUMMARY.md
+
